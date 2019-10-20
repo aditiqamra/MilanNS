@@ -1,0 +1,384 @@
+---
+title: "Milananalysis"
+output: html_document
+---
+```{r}
+#library setup
+library(rms)
+library(survival)
+library (tidyr)
+library(dplyr)
+library(lazyeval)
+library (readr)
+library (survminer)
+library (NMF)
+library (ComplexHeatmap)
+library (ggfortify)
+library (beeswarm)
+library (stringr)
+library(reshape2)
+library(circlize)
+library(ggbiplot)
+library(pvclust)
+library(ape)
+library(RColorBrewer)
+library(ggplot2)
+library(BlandAltmanLeh)
+library(beeswarm)
+library(calibrate)
+library(ggrepel)
+library(ggbeeswarm)
+library(ggrastr)
+library(superheat)
+library(wordcloud)
+library(ggraph)
+library(treemap)
+library(igraph)
+library(proActiv)
+setwd ("C:/Users/sundarraghav/Desktop/PhD/APIO/AP Validation/Retrospective validation cohorts/Milan/")
+
+set.seed(20190209)
+```
+```{r}
+#concatenate annotation file
+
+anno <- read.csv("ap2000 annotation.csv")
+
+ap2000anno <- as.data.frame(anno[,1])
+annotations <- as.data.frame(anno[,3:4])
+colnames(annotations)<-c("id","annotation")
+colnames(ap2000anno)<- "id"
+ap2000 <- left_join(ap2000anno, annotations, by = "id")
+
+write.csv(ap2000, "ap2000annotations.csv")
+
+##add h3k4me3 gain and loss to alternate promoters 
+#no need to run this block any more -> h3k4me3 has already been incorporated into rest of csvs
+#Deniz
+alternatepromoters <- milanap[,1:2]
+alternatepromotersdeniz <- filter(alternatepromoters, Annotation == "Deniz")
+deniz<- str_split(alternatepromotersdeniz$Probe.Name, "_")%>%as.data.frame%>%t()%>%as.data.frame
+colnames(deniz)<- c("gene","promoter")
+denizh3k4me3 <- read_csv("denizh3k4me3.csv")
+deniz$promoter <- as.character(deniz$promoter)
+denizh3k4me3$promoter <- as.character(denizh3k4me3$promoter)
+denizanno <- left_join(deniz, denizh3k4me3, by = "promoter")
+
+alternatepromotersdeniz <- bind_cols(alternatepromotersdeniz, denizanno)
+
+#Aditi
+nivonano <- read_csv("aditinanostring.csv")
+alternatepromotersaditi <- filter(alternatepromoters, Annotation == "Aditi")
+
+alternatepromotersaditi <- left_join(alternatepromotersaditi, nivonano, by = "Probe.Name")
+
+write.csv(denizanno, "deniz.csv")
+write.csv(alternatepromotersaditi, "aditi.csv")
+```
+
+```{r}
+#analyze nanostring of milan samples
+
+milanall <- read.csv("milannanostring.csv")
+
+#without removing QC failed samples
+milan <- milanall
+
+#remove QC failed samples (J11, J1, J3, J6, J7, J14, M2, M9, M20, M32)
+#definitively QC failed samples inclue J1, J3, J7 and M9, can consider including the others depending on anaylsis
+
+milan <- milanall[, -c(4:15)]
+
+milanap <- filter(milan, Annotation == "Aditi"|Annotation == "Deniz")
+milanimmune <- filter(milan, Annotation == "Immune"| Annotation == "Joe")
+
+#calculate APscore
+#create gain and loss matrices
+milanapgain <- filter(milanap, h3k4me3 == "gain")
+milanaploss <- filter(milanap, h3k4me3 == "loss")
+
+
+
+#calculate median values of relative promoter activity
+
+milanapgain$median <- apply(milanapgain[,4:ncol(milanapgain)],1,median,na.rm = T)
+milanaploss$median <- apply(milanaploss[,4:ncol(milanaploss)],1,median,na.rm = T)
+
+#assign points to gain and loss based on > 4xmedian or < 0.25 x median
+gainscore <- function(x){if_else(x>=(milanapgain$median*4),1,0)}
+milangainscore <- as.data.frame(apply(milanapgain[,4:c(ncol(milanapgain)-1)],2,gainscore))
+
+lossscore <- function(x){if_else(x<=(milanaploss$median*0.25),1,0)}
+milanlossscore <- as.data.frame(apply(milanaploss[,4:c(ncol(milanaploss)-1)],2,lossscore))
+
+milanapscore <- as.data.frame(colnames(milanlossscore))
+milanapscore$id <- milanapscore[,1]
+milanapscore$gainapscore <- apply(milangainscore,2,sum, na.rm = T)
+milanapscore$lossapscore <- apply(milanlossscore,2,sum, na.rm = T)
+milanapscore$apscore <- milanapscore$gainapscore + milanapscore$lossapscore
+
+milanapscore <- arrange(milanapscore, apscore)
+
+#pull in clinical data
+milanclinical <- read_csv("milanclinical.csv")
+milanapscore$nanostringid <- substr(milanapscore$id,15,17)
+
+milanmeta <- left_join(milanapscore, milanclinical, by = "nanostringid") 
+
+
+milanmeta$apgroup <- if_else(milanmeta$apscore > quantile(milanmeta$apscore, 0.80),"high","low")
+
+
+table(milanmeta$apgroup, milanmeta$ORR)
+matrix (c(9,0,23,11), nrow = 2, ncol = 2, byrow = TRUE)%>%fisher.test()
+
+
+
+survfit(Surv(pfs, progression)~apgroup, data = milanmeta)%>%
+  ggsurvplot(pval = TRUE, risk.table = TRUE, risk.table.height = 0.34, surv.plot.height = 1, palette = "jco")
+
+survfit(Surv(OS, death)~apgroup, data = apscoregastric)%>%
+  ggsurvplot(pval = TRUE, risk.table = TRUE, risk.table.height = 0.34, surv.plot.height = 1, palette = "jco")
+
+
+
+```
+```{r}
+#Aditi's promoters only
+#analyze nanostring of milan samples
+
+milanall <- read.csv("milannanostring.csv")
+
+#without removing QC failed samples
+milan <- milanall
+
+#remove QC failed samples (J11, J1, J3, J6, J7, J14, M2, M9, M20, M32)
+milan <- milanall[, -c(4:15)]
+
+milanap <- filter(milan, Annotation == "Aditi")
+milanimmune <- filter(milan, Annotation == "Immune"| Annotation == "Joe")
+
+#calculate APscore
+#create gain and loss matrices
+milanapgain <- filter(milanap, h3k4me3 == "gain")
+milanaploss <- filter(milanap, h3k4me3 == "loss")
+
+
+
+#calculate median values of relative promoter activity
+
+milanapgain$median <- apply(milanapgain[,4:ncol(milanapgain)],1,median,na.rm = T)
+milanaploss$median <- apply(milanaploss[,4:ncol(milanaploss)],1,median,na.rm = T)
+
+#assign points to gain and loss based on > 4xmedian or < 0.25 x median
+gainscore <- function(x){if_else(x>=(milanapgain$median*4),1,0)}
+milangainscore <- as.data.frame(apply(milanapgain[,4:c(ncol(milanapgain)-1)],2,gainscore))
+
+lossscore <- function(x){if_else(x<=(milanaploss$median*0.25),1,0)}
+milanlossscore <- as.data.frame(apply(milanaploss[,4:c(ncol(milanaploss)-1)],2,lossscore))
+
+milanapscore <- as.data.frame(colnames(milanlossscore))
+milanapscore$id <- milanapscore[,1]
+milanapscore$gainapscore <- apply(milangainscore,2,sum, na.rm = T)
+milanapscore$lossapscore <- apply(milanlossscore,2,sum, na.rm = T)
+milanapscore$apscore <- milanapscore$gainapscore + milanapscore$lossapscore
+
+milanapscore <- arrange(milanapscore, apscore)
+
+#pull in clinical data
+milanclinical <- read_csv("milanclinical.csv")
+milanapscore$nanostringid <- substr(milanapscore$id,15,17)
+
+milanmeta <- left_join(milanapscore, milanclinical, by = "nanostringid") 
+
+
+milanmeta$apgroup <- if_else(milanmeta$apscore > quantile(milanmeta$apscore, 0.80),"high","low")
+
+
+table(milanmeta$apgroup, milanmeta$ORR)
+matrix (c(9,0,23,11), nrow = 2, ncol = 2, byrow = TRUE)%>%fisher.test()
+
+
+
+survfit(Surv(pfs, progression)~apgroup, data = milanmeta)%>%
+  ggsurvplot(pval = TRUE, risk.table = TRUE, risk.table.height = 0.34, surv.plot.height = 1, palette = "jco")
+
+survfit(Surv(OS, death)~apgroup, data = apscoregastric)%>%
+  ggsurvplot(pval = TRUE, risk.table = TRUE, risk.table.height = 0.34, surv.plot.height = 1, palette = "jco")
+
+
+
+```
+
+```{r}
+#using only Deniz's promoters
+#analyze nanostring of milan samples
+
+milanall <- read.csv("milannanostring.csv")
+
+#without removing QC failed samples
+milan <- milanall
+
+#remove QC failed samples (J11, J1, J3, J6, J7, J14, M2, M9, M20, M32)
+milan <- milanall[, -c(4:15)]
+
+milanap <- filter(milan, Annotation == "Deniz")
+milanimmune <- filter(milan, Annotation == "Immune"| Annotation == "Joe")
+
+#calculate APscore
+#create gain and loss matrices
+milanapgain <- filter(milanap, h3k4me3 == "gain")
+milanaploss <- filter(milanap, h3k4me3 == "loss")
+
+
+
+#calculate median values of relative promoter activity
+
+milanapgain$median <- apply(milanapgain[,4:ncol(milanapgain)],1,median,na.rm = T)
+milanaploss$median <- apply(milanaploss[,4:ncol(milanaploss)],1,median,na.rm = T)
+
+#assign points to gain and loss based on > 4xmedian or < 0.25 x median
+gainscore <- function(x){if_else(x>=(milanapgain$median*4),1,0)}
+milangainscore <- as.data.frame(apply(milanapgain[,4:c(ncol(milanapgain)-1)],2,gainscore))
+
+lossscore <- function(x){if_else(x<=(milanaploss$median*0.25),1,0)}
+milanlossscore <- as.data.frame(apply(milanaploss[,4:c(ncol(milanaploss)-1)],2,lossscore))
+
+milanapscore <- as.data.frame(colnames(milanlossscore))
+milanapscore$id <- milanapscore[,1]
+milanapscore$gainapscore <- apply(milangainscore,2,sum, na.rm = T)
+milanapscore$lossapscore <- apply(milanlossscore,2,sum, na.rm = T)
+milanapscore$apscore <- milanapscore$gainapscore + milanapscore$lossapscore
+
+milanapscore <- arrange(milanapscore, apscore)
+
+#pull in clinical data
+milanclinical <- read_csv("milanclinical.csv")
+milanapscore$nanostringid <- substr(milanapscore$id,15,17)
+
+milanmeta <- left_join(milanapscore, milanclinical, by = "nanostringid") 
+
+
+milanmeta$apgroup <- if_else(milanmeta$apscore > quantile(milanmeta$apscore, 0.80),"high","low")
+
+
+table(milanmeta$apgroup, milanmeta$ORR)
+matrix (c(9,0,23,11), nrow = 2, ncol = 2, byrow = TRUE)%>%fisher.test()
+
+
+
+survfit(Surv(pfs, progression)~apgroup, data = milanmeta)%>%
+  ggsurvplot(pval = TRUE, risk.table = TRUE, risk.table.height = 0.34, surv.plot.height = 1, palette = "jco")
+
+survfit(Surv(OS, death)~apgroup, data = apscoregastric)%>%
+  ggsurvplot(pval = TRUE, risk.table = TRUE, risk.table.height = 0.34, surv.plot.height = 1, palette = "jco")
+
+
+
+
+```
+
+```{r}
+#derive APsignature
+
+#Nanostring expression
+
+milanapsignature <- read_csv("milannanostring.csv")
+
+milanapsignature <- filter(milanapsignature, h3k4me3 == "gain"|h3k4me3 == "loss")
+
+#remove very badly QC failed samples (J1, J3, J7, M9)
+milanapsignature$`20191001_cd1_J01_01.RCC`<- NULL
+milanapsignature$`20191001_cd1_J03_03.RCC`<- NULL
+milanapsignature$`20191001_cd1_J07_07.RCC`<- NULL
+milanapsignature$`20191001_cd2_M09_11.RCC`<- NULL
+
+#rearrange according to response
+
+milanapsig <- milanapsignature[,c(1,2,3,4,5,15,16,17,20,22,24,25,26,28,30,36,38,40,41,44,45,46,6,7,8,9,10,11,21,23,27,32,33,34,35,39,47,12,13,14,18,19,29,31,37,42,43)]
+
+#4:22 is PD,23:37 is SD,38:47 is PR
+
+#calculate median for PD, SD, PR
+milanapsig$medianPD <- apply(milanapsig[,4:22],1,median)
+milanapsig$medianSD <- apply(milanapsig[,23:37],1,median)
+milanapsig$medianPR <- apply(milanapsig[,38:47],1,median)
+
+milanapsiggain <- filter(milanapsig, h3k4me3 == "gain")
+milanapsigloss <- filter(milanapsig, h3k4me3 == "loss")
+
+milanapsiggain$pick <- if_else(milanapsiggain$medianPD>milanapsiggain$medianSD & milanapsiggain$medianSD>milanapsiggain$medianPR, "pick","unpick")
+
+milanapsigloss$pick <- if_else(milanapsigloss$medianPD<milanapsigloss$medianSD & milanapsigloss$medianSD<milanapsigloss$medianPR, "pick","unpick")
+
+milanapsiggainpick <- filter(milanapsiggain, pick == "pick")
+milanapsiglosspick <- filter(milanapsigloss, pick == "pick")
+
+milanapsign <- bind_rows(milanapsiggainpick, milanapsiglosspick)
+
+milanapsign$median <- apply(milanapsign[,4:47],1,median)
+
+
+#assign points to gain and loss based on > median or < median
+milanapsigngain <- filter(milanapsign, h3k4me3 == "gain")
+apgainscore <- function(x){if_else(x>(milanapsigngain$median),1,0)}
+milanapgainscore <- as.data.frame(apply(milanapsigngain[,4:c(ncol(milanapsigngain)-5)],2,apgainscore))
+
+milanapsignloss <- filter(milanapsign, h3k4me3 == "loss")
+aplossscore <- function(x){if_else(x<(milanapsignloss$median),1,0)}
+milanaplossscore <- as.data.frame(apply(milanapsignloss[4:c(ncol(milanapsignloss)-5)],2,aplossscore))
+
+milanscore <- as.data.frame(colnames(milanaplossscore))
+colnames(milanscore)<- "id"
+milanscore$gainapscore <- apply(milanapgainscore,2,sum, na.rm = T)
+milanscore$lossapscore <- apply(milanaplossscore,2,sum, na.rm = T)
+milanscore$apscore <- milanscore$gainapscore + milanscore$lossapscore
+
+milanheatmap <- bind_rows(milanapgainscore, milanaplossscore)
+
+Heatmap (milanheatmap, col = bluered299, name = "APscore", column_title = "Genes", column_title_side = "bottom", row_title_side = "left", column_title_gp = gpar(fontsize = 10, fontface = "bold"), row_title_gp = gpar(fontsize = 8, fontface = "bold"), row_title_rot = 0, cluster_rows = F, cluster_columns = T, show_column_dend = T, show_row_dend = F, row_dend_side = "left", column_dend_side = "top", column_dend_height = unit(1,"cm"), row_dend_width = unit(1,"cm"), clustering_method_rows = "complete", clustering_method_columns = "complete", clustering_distance_columns = "euclidean", show_column_names = F)
+
+#concatenate clinical data
+#pull in clinical data
+milanclinical <- read_csv("milanclinical.csv")
+milanscore$nanostringid <- substr(milanscore$id,14,16)
+
+milanmeta <- left_join(milanscore, milanclinical, by = "nanostringid") 
+
+
+milanmeta$apgroup <- if_else(milanmeta$apscore > 19, "high", if_else(milanmeta$apscore > 15, "int", "low"))
+
+
+table(milanmeta$apgroup, milanmeta$ORR)
+matrix (c(11,1,5,4,6,4,2,4,6), nrow = 3, ncol = 3, byrow = TRUE)%>%fisher.test()
+
+
+
+survfit(Surv(pfs, progression)~apgroup, data = milanmeta)%>%
+  ggsurvplot(pval = TRUE, risk.table = TRUE, risk.table.height = 0.34, surv.plot.height = 1, palette = "jco")
+
+milanmetahcc <- filter(milanmeta, diagnosis == "hcc")
+milanmetahcc$apgrouphighlow <- if_else(milanmetahcc$apgroup == "high", "high", "low")
+survfit(Surv(pfs, progression)~apgrouphighlow, data = milanmetahcc)%>%
+  ggsurvplot(pval = TRUE, risk.table = TRUE, risk.table.height = 0.34, surv.plot.height = 1, palette = "jco")
+
+milanmetaanal <- filter(milanmeta, diagnosis == "anal ca")
+milanmetaanal$apgrouphighlow <- if_else(milanmetaanal$apgroup == "high", "high", "low")
+survfit(Surv(pfs, progression)~apgrouphighlow, data = milanmetaanal)%>%
+  ggsurvplot(pval = TRUE, risk.table = TRUE, risk.table.height = 0.34, surv.plot.height = 1, palette = "jco")
+
+survfit(Surv(pfs, progression)~apgroup, data = milanmetaanal)%>%
+  ggsurvplot(pval = TRUE, risk.table = TRUE, risk.table.height = 0.34, surv.plot.height = 1, palette = "jco")
+
+
+survfit(Surv(os, death)~apgroup, data = milanmetaanal)%>%
+  ggsurvplot(pval = TRUE, risk.table = TRUE, risk.table.height = 0.34, surv.plot.height = 1, palette = "jco")
+
+milanmetagastric <- filter(milanmeta, diagnosis == "gastric ca")
+milanmetagastric$apgrouphighlow <- if_else(milanmetagastric$apgroup == "high", "high", "low")
+survfit(Surv(pfs, progression)~apgrouphighlow, data = milanmetagastric)%>%
+  ggsurvplot(pval = TRUE, risk.table = TRUE, risk.table.height = 0.34, surv.plot.height = 1, palette = "jco")
+
+
+```
+
